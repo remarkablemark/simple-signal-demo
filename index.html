@@ -1,0 +1,175 @@
+<style>
+  ul {
+    padding: 0;
+  }
+
+  ul li {
+    list-style: none;
+  }
+
+  ul button {
+    background-color: white;
+    border: 1px solid black;
+    font-size: 20px;
+    margin: 5px;
+    padding: 15px;
+    text-align: center;
+    width: 100%;
+  }
+
+  ul button:active,
+  ul button:focus,
+  ul button:hover {
+    background-color: whitesmoke;
+    cursor: pointer;
+  }
+
+  ul button.joined {
+    background-color: skyblue;
+  }
+
+  video {
+    display: inline;
+    width: 300px;
+  }
+</style>
+
+<h1>Select a lobby to join!</h1>
+<ul></ul>
+<div id="local-video"></div>
+<div id="remote-videos"></div>
+
+<script src="/socket.io/socket.io.min.js"></script>
+<script src="https://github.com/t-mullen/simple-signal/releases/latest/download/simple-signal-client.min.js"></script>
+
+<script>
+  var roomContainer = document.querySelector('ul');
+  var localVideoContainer = document.getElementById('local-video');
+  var remoteVideoContainer = document.getElementById('remote-videos');
+
+  // creates a li button to allow the user to see/join rooms
+  function createRoomButton(roomId) {
+    var li = document.createElement('li');
+    var button = document.createElement('button');
+    button.id = roomId;
+    button.innerText = roomId;
+    li.appendChild(button);
+    roomContainer.appendChild(li);
+    return button;
+  }
+
+  // creates a video element, sets a mediastream as it's source, and appends it to the DOM
+  function createVideoElement(container, mediaStream, muted) {
+    var videoElement = document.createElement('video');
+    videoElement.autoplay = true;
+    videoElement.srcObject = mediaStream;
+    videoElement.muted = muted || false;
+    container.appendChild(videoElement);
+    return videoElement;
+  }
+
+  // setup the socket.io socket
+  var socket = window.io();
+  // construct the signal client
+  var signalClient = new SimpleSignalClient(socket);
+  // keeps track of current room
+  var currentRoom = null;
+
+  function onPeer(peer, localStream) {
+    peer.addStream(localStream);
+    peer.on('stream', function(remoteStream) {
+      var videoElement = createVideoElement(
+        remoteVideoContainer,
+        remoteStream
+      );
+      peer.on('close', function() {
+        remoteVideoContainer.removeChild(videoElement);
+      });
+    });
+  }
+
+  // connects to a peer and handles media streams
+  function connectToPeer(peerId, localStream) {
+    console.log('Connecting to peer: %s', peerId);
+    // connect to the peer
+    signalClient.connect(peerId, currentRoom).then(function(data) {
+      console.log('Connected to peer: %s', peerId);
+      onPeer(data.peer, localStream);
+    });
+  }
+
+  function joinRoom(roomId, localStream) {
+    console.log('Join: %s', roomId);
+
+    // disconnect from all peers in old room
+    if (currentRoom) {
+      if (currentRoom === roomId) {
+        return;
+      }
+
+      signalClient.peers().forEach(function(peer) {
+        peer.destroy();
+      });
+
+      currentRoomElement.classList.remove('joined');
+    }
+
+    // update current room
+    currentRoom = roomId;
+    currentRoomElement = document.getElementById(roomId);
+    currentRoomElement.classList.add('joined');
+    console.log('Requesting to join: %s', roomId);
+    signalClient.discover(roomId);
+
+    // get the peers in this room
+    function onRoomPeers(discoveryData) {
+      if (discoveryData.roomResponse == roomId) {
+        console.log(discoveryData);
+        signalClient.removeListener('discover', onRoomPeers);
+        // connect to all peers in new room
+        discoveryData.peers.forEach(function(peerId) {
+          connectToPeer(peerId, localStream)
+        });
+      }
+    }
+    signalClient.addListener('discover', onRoomPeers);
+  }
+
+  // request local webcam
+  var constraints = { audio: true, video: true };
+  navigator.mediaDevices.getUserMedia(constraints).then(function(localStream) {
+    // display local video
+    var videoElement = createVideoElement(
+      localVideoContainer,
+      localStream,
+      true
+    );
+
+    // begin discovering rooms
+    signalClient.discover(null);
+
+    signalClient.on('request', function(request) {
+      request.accept().then(function(data) {
+        onPeer(data.peer, localStream);
+      });
+    });
+
+    // listen for discovery's completion
+    signalClient.once('discover', function(discoveryData) {
+      // discovery provides a list of rooms, show them to the user
+      console.log(discoveryData);
+      discoveryData.rooms.forEach(function(roomId) {
+        // create a li button for each room
+        var roomButton = createRoomButton(roomId);
+        // register a click handler to join room
+        roomButton.addEventListener('click', function() {
+          joinRoom(roomId, localStream)
+        });
+      });
+    });
+
+  }).catch(function(error) {
+    console.error(error);
+    alert('No webcam access!');
+  });
+</script>
